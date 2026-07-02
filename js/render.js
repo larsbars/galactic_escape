@@ -203,17 +203,24 @@ export class Renderer {
 
   _drawBullets(game) {
     const { ctx } = this;
+    const img = ready(this.assets.laser) ? this.assets.laser : this.bulletSprite;
+    const ratio = ready(this.assets.laser)
+      ? this.assets.laser.naturalHeight / this.assets.laser.naturalWidth
+      : 2.5;
     ctx.globalCompositeOperation = 'lighter';
-    if (ready(this.assets.laser)) {
-      const img = this.assets.laser;
-      const bw = 0.8;
-      const bh = bw * (img.naturalHeight / img.naturalWidth);
-      for (const b of game.bullets) {
+    for (const b of game.bullets) {
+      // Power beams are visibly beefier
+      const bw = (b.dmg ?? 1) >= 2 ? 1.25 : 0.8;
+      const bh = bw * ratio;
+      if (b.vx) {
+        // Fan/seeker bullets travel at an angle; sprite art points up
+        ctx.save();
+        ctx.translate(b.x, b.y);
+        ctx.rotate(Math.atan2(b.vy, b.vx) + Math.PI / 2);
+        ctx.drawImage(img, -bw / 2, -bh / 2, bw, bh);
+        ctx.restore();
+      } else {
         ctx.drawImage(img, b.x - bw / 2, b.y - bh / 2, bw, bh);
-      }
-    } else {
-      for (const b of game.bullets) {
-        ctx.drawImage(this.bulletSprite, b.x - 0.9, b.y - 2.2, 1.8, 4.4);
       }
     }
     ctx.globalCompositeOperation = 'source-over';
@@ -294,6 +301,22 @@ export class Renderer {
       ctx.fillStyle = '#ffd75e';
       ctx.fillRect(bx + barW + 1.5 + i * 2.6, by, 1.8, barH);
     }
+
+    // Cannon upgrade bar below the shield bar
+    const cy = by + barH + 0.8;
+    ctx.fillStyle = 'rgba(255, 157, 92, 0.18)';
+    ctx.fillRect(bx, cy, barW, barH);
+    ctx.fillStyle = '#ff9d5c';
+    ctx.fillRect(bx, cy, barW * game.cannonProgress(), barH);
+    ctx.strokeStyle = 'rgba(255, 157, 92, 0.5)';
+    ctx.lineWidth = 0.25;
+    ctx.strokeRect(bx, cy, barW, barH);
+
+    // Cannon level pips
+    for (let i = 0; i < game.cannonLevel; i++) {
+      ctx.fillStyle = '#ff9d5c';
+      ctx.fillRect(bx + barW + 1.5 + i * 2.6, cy, 1.8, barH);
+    }
   }
 
   // Transient announcements: ARMOR FORGED, SHIELD DOWN, ...
@@ -306,15 +329,19 @@ export class Renderer {
   }
 
   _drawMenu(game) {
+    const cx = WORLD_W / 2;
     const cy = game.worldH / 2;
-    this._text('GALACTIC ESCAPE', WORLD_W / 2, cy - 14, 8, '#9ad8ff');
-    this._text('drag or use arrow keys to move', WORLD_W / 2, cy, 3.4, '#8a92b8');
-    this._text('tap or hold space to shoot', WORLD_W / 2, cy + 6, 3.4, '#8a92b8');
-    this._text('destroy rocks to charge your shield', WORLD_W / 2, cy + 12, 3.4, '#6fd3ff');
-    this._text('overcharge it to forge armor', WORLD_W / 2, cy + 17, 3.4, '#ffd75e');
-    this._text('TAP OR PRESS SPACE TO START', WORLD_W / 2, cy + 26, 4, '#7dff9b');
+    // Scale line spacing to the viewport so the menu fits landscape screens too
+    const lh = Math.min(5.5, game.worldH * 0.055);
+    this._text('GALACTIC ESCAPE', cx, cy - 3 * lh, 8, '#9ad8ff');
+    this._text('drag or use arrow keys to move', cx, cy - lh, 3.4, '#8a92b8');
+    this._text('tap or hold space to shoot', cx, cy, 3.4, '#8a92b8');
+    this._text('destroy rocks to charge your shield', cx, cy + lh, 3.4, '#6fd3ff');
+    this._text('overcharge it to forge armor', cx, cy + 2 * lh, 3.4, '#ffd75e');
+    this._text('big rocks power up your cannon', cx, cy + 3 * lh, 3.4, '#ff9d5c');
+    this._text('TAP OR PRESS SPACE TO START', cx, cy + 4.6 * lh, 4, '#7dff9b');
     if (game.highScore > 0) {
-      this._text(`HIGH SCORE ${game.highScore}`, WORLD_W / 2, cy + 34, 3.4, '#ffb347');
+      this._text(`HIGH SCORE ${game.highScore}`, cx, cy + 6 * lh, 3.4, '#ffb347');
     }
   }
 

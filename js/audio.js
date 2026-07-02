@@ -57,6 +57,10 @@ export class Sound {
     this._noise({ duration: 0.2, volume: 0.12 });
   }
   armorUp()   { this._tone({ type: 'triangle', from: 300, to: 900, duration: 0.3, volume: 0.18 }); }
+  cannonUp()  {
+    this._tone({ type: 'square', from: 500, to: 1000, duration: 0.12, volume: 0.12 });
+    this._tone({ type: 'triangle', from: 700, to: 1400, duration: 0.3, volume: 0.15 });
+  }
   armorHit()  {
     this._tone({ type: 'square', from: 150, to: 70, duration: 0.15, volume: 0.2 });
     this._noise({ duration: 0.1, volume: 0.15 });

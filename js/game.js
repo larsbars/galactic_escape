@@ -14,6 +14,12 @@ export const SHIELD_MAX = 100;  // charge needed to overflow into armor
 const SHIELD_PER_RADIUS = 4;    // charge gained per world-unit of asteroid radius
 const ARMOR_HITS = 2;           // protection per armor plate
 
+// Cannon upgrades: XP comes only from multi-hit rocks (their max hp, so
+// 2 or 3 per kill). Each tier costs more than the last.
+const CANNON_THRESHOLDS = [6, 14, 24];
+export const CANNON_NAMES = ['POWER BEAM', 'FAN SHOT', 'SEEKER LASERS'];
+const SEEKER_TURN_RATE = 3.2;   // rad/sec a seeking bullet can curve
+
 export const State = {
   MENU: 'menu',
   PLAYING: 'playing',
@@ -39,6 +45,8 @@ export class Game {
     this.lives = START_LIVES;
     this.shield = 0;   // 0..SHIELD_MAX, charged by destroying asteroids
     this.armorHp = 0;  // hits the current armor plate can still absorb
+    this.cannonLevel = 0;
+    this.cannonXp = 0; // progress toward the next cannon tier
     this.elapsed = 0;
     this.ship = { x: WORLD_W / 2, w: 7, h: 8, invuln: 0 };
     this.bullets = [];   // {x, y}
@@ -128,7 +136,17 @@ export class Game {
     this.fireTimer -= dt;
     if (input.fire && this.fireTimer <= 0) {
       this.fireTimer = FIRE_COOLDOWN;
-      this.bullets.push({ x: this.ship.x, y: this.shipY() - this.ship.h / 2 });
+      const x = this.ship.x;
+      const y = this.shipY() - this.ship.h / 2;
+      const dmg = this.cannonLevel >= 1 ? 2 : 1;
+      const angles = this.cannonLevel >= 2 ? [-0.26, 0, 0.26] : [0];
+      for (const ang of angles) {
+        this.bullets.push({
+          x, y, dmg,
+          vx: Math.sin(ang) * BULLET_SPEED,
+          vy: -Math.cos(ang) * BULLET_SPEED,
+        });
+      }
       events.push('laser');
     }
   }
@@ -138,8 +156,31 @@ export class Game {
   }
 
   _updateBullets(dt) {
-    for (const b of this.bullets) b.y -= BULLET_SPEED * dt;
-    this.bullets = this.bullets.filter((b) => b.y > -5);
+    const homing = this.cannonLevel >= 3;
+    for (const b of this.bullets) {
+      if (homing && this.asteroids.length > 0) {
+        // Curve toward the nearest asteroid, turn rate limited
+        let best = null, bestD = Infinity;
+        for (const a of this.asteroids) {
+          const dx = a.x - b.x, dy = a.y - b.y;
+          const d = dx * dx + dy * dy;
+          if (d < bestD) { bestD = d; best = a; }
+        }
+        const cur = Math.atan2(b.vy, b.vx);
+        const want = Math.atan2(best.y - b.y, best.x - b.x);
+        let diff = want - cur;
+        if (diff > Math.PI) diff -= 2 * Math.PI;
+        if (diff < -Math.PI) diff += 2 * Math.PI;
+        const turn = Math.max(-SEEKER_TURN_RATE * dt, Math.min(SEEKER_TURN_RATE * dt, diff));
+        b.vx = Math.cos(cur + turn) * BULLET_SPEED;
+        b.vy = Math.sin(cur + turn) * BULLET_SPEED;
+      }
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+    }
+    this.bullets = this.bullets.filter(
+      (b) => b.y > -5 && b.y < this.worldH + 5 && b.x > -5 && b.x < WORLD_W + 5
+    );
   }
 
   _spawnAsteroids(dt) {
@@ -149,13 +190,15 @@ export class Game {
     this.spawnTimer = (1.1 + Math.random() * 0.6) / diff;
 
     const r = 3 + Math.random() * 5;
+    const hp = r > 6 ? 3 : r > 4.5 ? 2 : 1;
     this.asteroids.push({
       x: r + Math.random() * (WORLD_W - 2 * r),
       y: -r,
       r,
       vy: (14 + Math.random() * 12) * (0.7 + diff * 0.3),
       vx: (Math.random() - 0.5) * 8,
-      hp: r > 6 ? 3 : r > 4.5 ? 2 : 1,
+      hp,
+      maxHp: hp,
       angle: Math.random() * Math.PI * 2,
       spin: (Math.random() - 0.5) * 2,
       seed: Math.random(), // stable per-asteroid visual identity
@@ -179,11 +222,12 @@ export class Game {
         const dx = b.x - a.x, dy = b.y - a.y;
         if (dx * dx + dy * dy < a.r * a.r) {
           b.dead = true;
-          a.hp -= 1;
+          a.hp -= b.dmg ?? 1;
           if (a.hp <= 0) {
             a.dead = true;
             this.score += Math.round(a.r) * 10;
             this._addShield(Math.round(a.r) * SHIELD_PER_RADIUS, events);
+            if (a.maxHp >= 2) this._addCannonXp(a.maxHp, events);
             this._explode(a.x, a.y, a.r, '#ffb347');
             events.push('explosion');
           } else {
@@ -251,6 +295,29 @@ export class Game {
         this.shield = SHIELD_MAX;
       }
     }
+  }
+
+  // XP from hard rocks only; each tier costs more. Levels are permanent
+  // for the run.
+  _addCannonXp(amount, events) {
+    if (this.cannonLevel >= CANNON_THRESHOLDS.length) return;
+    this.cannonXp += amount;
+    while (
+      this.cannonLevel < CANNON_THRESHOLDS.length &&
+      this.cannonXp >= CANNON_THRESHOLDS[this.cannonLevel]
+    ) {
+      this.cannonXp -= CANNON_THRESHOLDS[this.cannonLevel];
+      this.cannonLevel += 1;
+      this._setMessage(`${CANNON_NAMES[this.cannonLevel - 1]} UNLOCKED`, '#ff9d5c');
+      events.push('cannonup');
+    }
+    if (this.cannonLevel >= CANNON_THRESHOLDS.length) this.cannonXp = 0;
+  }
+
+  // 0..1 progress toward the next cannon tier (1 when maxed).
+  cannonProgress() {
+    if (this.cannonLevel >= CANNON_THRESHOLDS.length) return 1;
+    return this.cannonXp / CANNON_THRESHOLDS[this.cannonLevel];
   }
 
   _explode(x, y, size, color) {
