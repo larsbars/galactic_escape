@@ -46,6 +46,15 @@ export class Game {
     this.particles = []; // {x, y, vx, vy, life, maxLife, color}
     this.fireTimer = 0;
     this.spawnTimer = 0;
+    this.message = null;      // transient on-screen announcement
+    this.messageColor = '#fff';
+    this.messageTimer = 0;
+  }
+
+  _setMessage(text, color) {
+    this.message = text;
+    this.messageColor = color;
+    this.messageTimer = 1.6;
   }
 
   _initStars() {
@@ -79,6 +88,7 @@ export class Game {
     }
 
     this.elapsed += dt;
+    this.messageTimer = Math.max(0, this.messageTimer - dt);
     this._updateShip(dt, input);
     this._updateFiring(dt, input, events);
     this._updateBullets(dt);
@@ -196,10 +206,12 @@ export class Game {
           // Damage order: shield shatters first, then armor, then a life.
           if (this.shield > 0) {
             this.shield = 0;
+            this._setMessage('SHIELD DOWN', '#6fd3ff');
             this._explode(ship.x, shipY - 4, 3, '#6fd3ff');
             events.push('shieldbreak');
           } else if (this.armorHp > 0) {
             this.armorHp -= 1;
+            this._setMessage(this.armorHp > 0 ? 'ARMOR CRACKED' : 'ARMOR DESTROYED', '#ffd75e');
             this._explode(ship.x, shipY, 3, '#ffd75e');
             events.push('armorhit');
           } else {
@@ -232,6 +244,8 @@ export class Game {
       if (this.armorHp === 0) {
         this.shield -= SHIELD_MAX;
         this.armorHp = ARMOR_HITS;
+        this._setMessage('ARMOR FORGED', '#ffd75e');
+        this._explode(this.ship.x, this.shipY(), 4, '#ffd75e');
         events.push('armorup');
       } else {
         this.shield = SHIELD_MAX;

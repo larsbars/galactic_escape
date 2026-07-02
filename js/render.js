@@ -64,6 +64,7 @@ export class Renderer {
     if (game.state === State.PLAYING) {
       this._drawShip(game, t);
       this._drawHud(game);
+      this._drawMessage(game);
     }
     if (game.state === State.MENU) this._drawMenu(game);
     if (game.state === State.GAME_OVER) this._drawGameOver(game);
@@ -142,20 +143,32 @@ export class Renderer {
     this._drawShield(game, y, t);
   }
 
-  // Gold chevron plating on the nose; dimmed and cracked once it has taken a hit.
+  // Gold aura + thick plating chevron; dimmed and cracked once it has taken a hit.
   _drawArmor(game, y) {
     if (game.armorHp <= 0) return;
     const { ctx } = this;
     const ship = game.ship;
     const w = ship.w, h = ship.h;
-    ctx.strokeStyle = game.armorHp >= 2 ? '#ffd75e' : 'rgba(255, 215, 94, 0.55)';
-    ctx.lineWidth = 0.7;
+    const intact = game.armorHp >= 2;
+
+    // Gold aura around the whole ship — clearly distinct from the blue shield
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = intact ? 0.4 : 0.2;
+    const aura = w * 2.3;
+    ctx.drawImage(glowDot('#ffd75e'), ship.x - aura / 2, y - aura / 2, aura, aura);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Plating band on the nose
+    ctx.strokeStyle = intact ? '#ffd75e' : 'rgba(255, 215, 94, 0.7)';
+    ctx.lineWidth = 1.2;
     ctx.lineJoin = 'round';
-    if (game.armorHp < 2) ctx.setLineDash([1.2, 0.7]);
+    ctx.lineCap = 'round';
+    if (!intact) ctx.setLineDash([1.4, 0.9]);
     ctx.beginPath();
-    ctx.moveTo(ship.x - w * 0.4, y + h * 0.02);
-    ctx.lineTo(ship.x, y - h * 0.42);
-    ctx.lineTo(ship.x + w * 0.4, y + h * 0.02);
+    ctx.moveTo(ship.x - w * 0.45, y + h * 0.05);
+    ctx.lineTo(ship.x, y - h * 0.45);
+    ctx.lineTo(ship.x + w * 0.45, y + h * 0.05);
     ctx.stroke();
     ctx.setLineDash([]);
   }
@@ -281,6 +294,15 @@ export class Renderer {
       ctx.fillStyle = '#ffd75e';
       ctx.fillRect(bx + barW + 1.5 + i * 2.6, by, 1.8, barH);
     }
+  }
+
+  // Transient announcements: ARMOR FORGED, SHIELD DOWN, ...
+  _drawMessage(game) {
+    if (game.messageTimer <= 0 || !game.message) return;
+    const { ctx } = this;
+    ctx.globalAlpha = Math.min(1, game.messageTimer / 0.5);
+    this._text(game.message, WORLD_W / 2, game.worldH * 0.62, 5, game.messageColor);
+    ctx.globalAlpha = 1;
   }
 
   _drawMenu(game) {
