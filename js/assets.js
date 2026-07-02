@@ -13,6 +13,13 @@ export function loadAssets() {
   return {
     ship: img('assets/playerShip2_blue.png'),
     laser: img('assets/laserGreen11.png'),
+    pickups: {
+      beam: img('assets/powerupYellow_bolt.png'),
+      fan: img('assets/powerupGreen_star.png'),
+      seeker: img('assets/powerupRed_star.png'),
+      shield: img('assets/powerupBlue_shield.png'),
+      missiles: img('assets/things_gold.png'),
+    },
     shields: [
       img('assets/shield1.png'),
       img('assets/shield2.png'),

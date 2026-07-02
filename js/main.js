@@ -30,7 +30,8 @@ const SOUNDS = {
   shieldbreak: () => sound.shieldBreak(),
   armorup: () => sound.armorUp(),
   armorhit: () => sound.armorHit(),
-  cannonup: () => sound.cannonUp(),
+  pickup: () => sound.pickup(),
+  missile: () => sound.missile(),
 };
 
 let last = performance.now();

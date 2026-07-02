@@ -14,11 +14,29 @@ export const SHIELD_MAX = 100;  // charge needed to overflow into armor
 const SHIELD_PER_RADIUS = 4;    // charge gained per world-unit of asteroid radius
 const ARMOR_HITS = 2;           // protection per armor plate
 
-// Cannon upgrades: XP comes only from multi-hit rocks (their max hp, so
-// 2 or 3 per kill). Each tier costs more than the last.
-const CANNON_THRESHOLDS = [6, 14, 24];
-export const CANNON_NAMES = ['POWER BEAM', 'FAN SHOT', 'SEEKER LASERS'];
-const SEEKER_TURN_RATE = 3.2;   // rad/sec a seeking bullet can curve
+// Weapon upgrades are timed power-ups collected by flying into pickups.
+// Hard rocks have a chance to drop one; others drift in on a timer.
+export const POWER_DURATION = 10;   // seconds per weapon power-up
+const SEEKER_TURN_RATE = 3.2;       // rad/sec a seeking bullet can curve
+const PICKUP_RADIUS = 2.8;
+const PICKUP_FALL_SPEED = 11;
+const DROP_CHANCE_BIG = 0.35;       // 3-hit rocks
+const DROP_CHANCE_MED = 0.18;       // 2-hit rocks
+const AMBIENT_PICKUP_INTERVAL = 16; // avg seconds between drifting pickups
+const PICKUP_WEIGHTS = [
+  ['beam', 0.25], ['fan', 0.2], ['seeker', 0.15], ['shield', 0.25], ['missiles', 0.15],
+];
+export const POWER_INFO = {
+  beam:     { label: 'POWER BEAM',  color: '#ffe066' },
+  fan:      { label: 'FAN SHOT',    color: '#7dff9b' },
+  seeker:   { label: 'SEEKER LASERS', color: '#ff6b6b' },
+  shield:   { label: '+SHIELD',     color: '#6fd3ff' },
+  missiles: { label: 'MISSILES AWAY', color: '#ff9d5c' },
+};
+const MISSILE_SPEED = 75;
+const MISSILE_TURN_RATE = 5;
+const MISSILE_DMG = 4;
+const MISSILE_SALVO = 4;
 
 export const State = {
   MENU: 'menu',
@@ -45,8 +63,10 @@ export class Game {
     this.lives = START_LIVES;
     this.shield = 0;   // 0..SHIELD_MAX, charged by destroying asteroids
     this.armorHp = 0;  // hits the current armor plate can still absorb
-    this.cannonLevel = 0;
-    this.cannonXp = 0; // progress toward the next cannon tier
+    this.power = { beam: 0, fan: 0, seeker: 0 }; // seconds remaining per effect
+    this.pickups = [];  // {x, y, vy, type, seed}
+    this.missiles = []; // {x, y, vx, vy}
+    this.pickupTimer = 8; // first ambient pickup arrives early to teach the mechanic
     this.elapsed = 0;
     this.ship = { x: WORLD_W / 2, w: 7, h: 8, invuln: 0 };
     this.bullets = [];   // {x, y}
@@ -97,10 +117,13 @@ export class Game {
 
     this.elapsed += dt;
     this.messageTimer = Math.max(0, this.messageTimer - dt);
+    for (const k in this.power) this.power[k] = Math.max(0, this.power[k] - dt);
     this._updateShip(dt, input);
     this._updateFiring(dt, input, events);
     this._updateBullets(dt);
+    this._updateMissiles(dt, events);
     this._updateAsteroids(dt, events);
+    this._updatePickups(dt, events);
     this._updateParticles(dt);
     this._spawnAsteroids(dt);
     return events;
@@ -138,8 +161,8 @@ export class Game {
       this.fireTimer = FIRE_COOLDOWN;
       const x = this.ship.x;
       const y = this.shipY() - this.ship.h / 2;
-      const dmg = this.cannonLevel >= 1 ? 2 : 1;
-      const angles = this.cannonLevel >= 2 ? [-0.26, 0, 0.26] : [0];
+      const dmg = this.power.beam > 0 ? 2 : 1;
+      const angles = this.power.fan > 0 ? [-0.26, 0, 0.26] : [0];
       for (const ang of angles) {
         this.bullets.push({
           x, y, dmg,
@@ -156,7 +179,7 @@ export class Game {
   }
 
   _updateBullets(dt) {
-    const homing = this.cannonLevel >= 3;
+    const homing = this.power.seeker > 0;
     for (const b of this.bullets) {
       if (homing && this.asteroids.length > 0) {
         // Curve toward the nearest asteroid, turn rate limited
@@ -224,12 +247,7 @@ export class Game {
           b.dead = true;
           a.hp -= b.dmg ?? 1;
           if (a.hp <= 0) {
-            a.dead = true;
-            this.score += Math.round(a.r) * 10;
-            this._addShield(Math.round(a.r) * SHIELD_PER_RADIUS, events);
-            if (a.maxHp >= 2) this._addCannonXp(a.maxHp, events);
-            this._explode(a.x, a.y, a.r, '#ffb347');
-            events.push('explosion');
+            this._killAsteroid(a, events);
           } else {
             this._explode(b.x, b.y, 1, '#9ad8ff');
           }
@@ -297,27 +315,129 @@ export class Game {
     }
   }
 
-  // XP from hard rocks only; each tier costs more. Levels are permanent
-  // for the run.
-  _addCannonXp(amount, events) {
-    if (this.cannonLevel >= CANNON_THRESHOLDS.length) return;
-    this.cannonXp += amount;
-    while (
-      this.cannonLevel < CANNON_THRESHOLDS.length &&
-      this.cannonXp >= CANNON_THRESHOLDS[this.cannonLevel]
-    ) {
-      this.cannonXp -= CANNON_THRESHOLDS[this.cannonLevel];
-      this.cannonLevel += 1;
-      this._setMessage(`${CANNON_NAMES[this.cannonLevel - 1]} UNLOCKED`, '#ff9d5c');
-      events.push('cannonup');
-    }
-    if (this.cannonLevel >= CANNON_THRESHOLDS.length) this.cannonXp = 0;
+  _killAsteroid(a, events) {
+    a.dead = true;
+    this.score += Math.round(a.r) * 10;
+    this._addShield(Math.round(a.r) * SHIELD_PER_RADIUS, events);
+    // Hard rocks are the pickup source — more risk, more reward
+    const dropChance = a.maxHp >= 3 ? DROP_CHANCE_BIG : a.maxHp >= 2 ? DROP_CHANCE_MED : 0;
+    if (Math.random() < dropChance) this._spawnPickup(a.x, a.y);
+    this._explode(a.x, a.y, a.r, '#ffb347');
+    events.push('explosion');
   }
 
-  // 0..1 progress toward the next cannon tier (1 when maxed).
-  cannonProgress() {
-    if (this.cannonLevel >= CANNON_THRESHOLDS.length) return 1;
-    return this.cannonXp / CANNON_THRESHOLDS[this.cannonLevel];
+  _spawnPickup(x, y) {
+    let roll = Math.random();
+    let type = PICKUP_WEIGHTS[0][0];
+    for (const [t, w] of PICKUP_WEIGHTS) {
+      type = t;
+      roll -= w;
+      if (roll <= 0) break;
+    }
+    this.pickups.push({
+      x: Math.max(4, Math.min(WORLD_W - 4, x)),
+      y,
+      vy: PICKUP_FALL_SPEED * (0.8 + Math.random() * 0.4),
+      type,
+      seed: Math.random(),
+    });
+  }
+
+  _updatePickups(dt, events) {
+    this.pickupTimer -= dt;
+    if (this.pickupTimer <= 0) {
+      this.pickupTimer = AMBIENT_PICKUP_INTERVAL * (0.7 + Math.random() * 0.6);
+      this._spawnPickup(4 + Math.random() * (WORLD_W - 8), -3);
+    }
+
+    const ship = this.ship;
+    const shipY = this.shipY();
+    for (const p of this.pickups) {
+      p.y += p.vy * dt;
+      const dx = p.x - ship.x, dy = p.y - shipY;
+      const hitR = PICKUP_RADIUS + ship.w * 0.45;
+      if (dx * dx + dy * dy < hitR * hitR) {
+        p.dead = true;
+        this._collectPickup(p, events);
+      }
+    }
+    this.pickups = this.pickups.filter((p) => !p.dead && p.y < this.worldH + 4);
+  }
+
+  _collectPickup(p, events) {
+    const info = POWER_INFO[p.type];
+    this._setMessage(info.label, info.color);
+    if (p.type === 'shield') {
+      this._addShield(40, events); // may itself announce ARMOR FORGED
+    } else if (p.type === 'missiles') {
+      this._launchMissiles(events);
+    } else {
+      this.power[p.type] = POWER_DURATION;
+    }
+    this._explode(p.x, p.y, 2, info.color);
+    events.push('pickup');
+  }
+
+  _launchMissiles(events) {
+    const x = this.ship.x;
+    const y = this.shipY() - 2;
+    for (let i = 0; i < MISSILE_SALVO; i++) {
+      const ang = -Math.PI / 2 + (i - (MISSILE_SALVO - 1) / 2) * 0.6;
+      this.missiles.push({
+        x, y,
+        vx: Math.cos(ang) * MISSILE_SPEED,
+        vy: Math.sin(ang) * MISSILE_SPEED,
+      });
+    }
+    events.push('missile');
+  }
+
+  _updateMissiles(dt, events) {
+    for (const m of this.missiles) {
+      if (this.asteroids.length > 0) {
+        let best = null, bestD = Infinity;
+        for (const a of this.asteroids) {
+          const dx = a.x - m.x, dy = a.y - m.y;
+          const d = dx * dx + dy * dy;
+          if (d < bestD) { bestD = d; best = a; }
+        }
+        const cur = Math.atan2(m.vy, m.vx);
+        const want = Math.atan2(best.y - m.y, best.x - m.x);
+        let diff = want - cur;
+        if (diff > Math.PI) diff -= 2 * Math.PI;
+        if (diff < -Math.PI) diff += 2 * Math.PI;
+        const turn = Math.max(-MISSILE_TURN_RATE * dt, Math.min(MISSILE_TURN_RATE * dt, diff));
+        m.vx = Math.cos(cur + turn) * MISSILE_SPEED;
+        m.vy = Math.sin(cur + turn) * MISSILE_SPEED;
+      }
+      m.x += m.vx * dt;
+      m.y += m.vy * dt;
+
+      // Exhaust trail
+      this.particles.push({
+        x: m.x, y: m.y,
+        vx: -m.vx * 0.15, vy: -m.vy * 0.15,
+        life: 0.25, maxLife: 0.25,
+        color: '#ff9d5c',
+      });
+
+      for (const a of this.asteroids) {
+        if (a.dead) continue;
+        const dx = a.x - m.x, dy = a.y - m.y;
+        const hitR = a.r + 1;
+        if (dx * dx + dy * dy < hitR * hitR) {
+          m.dead = true;
+          a.hp -= MISSILE_DMG;
+          if (a.hp <= 0) this._killAsteroid(a, events);
+          else this._explode(m.x, m.y, 2, '#ff9d5c');
+          break;
+        }
+      }
+    }
+    this.missiles = this.missiles.filter(
+      (m) => !m.dead && m.y > -5 && m.y < this.worldH + 5 && m.x > -8 && m.x < WORLD_W + 8
+    );
+    this.asteroids = this.asteroids.filter((a) => !a.dead);
   }
 
   _explode(x, y, size, color) {

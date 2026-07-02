@@ -3,7 +3,7 @@
 // at any resolution or devicePixelRatio. Sprites are pre-rendered offscreen
 // (see sprites.js) and blitted here.
 
-import { WORLD_W, State, SHIELD_MAX } from './game.js';
+import { WORLD_W, State, SHIELD_MAX, POWER_DURATION, POWER_INFO } from './game.js';
 import {
   makeShipSprite,
   makeAsteroidTexture,
@@ -59,7 +59,9 @@ export class Renderer {
 
     if (game.state === State.PLAYING || game.state === State.GAME_OVER) {
       this._drawBullets(game);
+      this._drawMissiles(game);
       this._drawAsteroids(game);
+      this._drawPickups(game, t);
     }
     if (game.state === State.PLAYING) {
       this._drawShip(game, t);
@@ -226,6 +228,66 @@ export class Renderer {
     ctx.globalCompositeOperation = 'source-over';
   }
 
+  // Pickups bob gently and glow in their effect color so they read as "good".
+  _drawPickups(game, t) {
+    const { ctx } = this;
+    for (const p of game.pickups) {
+      const bob = Math.sin(t * 3 + p.seed * 20) * 0.6;
+      const x = p.x + bob;
+      const color = POWER_INFO[p.type].color;
+
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.45 + 0.15 * Math.sin(t * 5 + p.seed * 20);
+      ctx.drawImage(glowDot(color), x - 3.6, p.y - 3.6, 7.2, 7.2);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+
+      const img = this.assets.pickups[p.type];
+      if (ready(img)) {
+        ctx.drawImage(img, x - 2.2, p.y - 2.2, 4.4, 4.4);
+      } else {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(x, p.y, 2, 0, Math.PI * 2);
+        ctx.fill();
+        this._text(p.type[0].toUpperCase(), x, p.y + 0.2, 2.6, '#05060f');
+      }
+    }
+  }
+
+  _drawMissiles(game) {
+    const { ctx } = this;
+    for (const m of game.missiles) {
+      ctx.save();
+      ctx.translate(m.x, m.y);
+      ctx.rotate(Math.atan2(m.vy, m.vx) + Math.PI / 2);
+      // Body
+      ctx.fillStyle = '#c7ccd4';
+      ctx.beginPath();
+      ctx.moveTo(0, -1.4);
+      ctx.lineTo(0.5, -0.4);
+      ctx.lineTo(0.5, 1.0);
+      ctx.lineTo(-0.5, 1.0);
+      ctx.lineTo(-0.5, -0.4);
+      ctx.closePath();
+      ctx.fill();
+      // Fins
+      ctx.fillStyle = '#8a919c';
+      ctx.fillRect(-0.9, 0.5, 1.8, 0.5);
+      // Exhaust
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = '#ffb347';
+      ctx.beginPath();
+      ctx.moveTo(-0.35, 1.0);
+      ctx.lineTo(0, 2.2 + Math.random() * 0.7);
+      ctx.lineTo(0.35, 1.0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.restore();
+    }
+  }
+
   _asteroidTexture(a) {
     let tex = this.asteroidTex.get(a);
     if (!tex) {
@@ -302,20 +364,20 @@ export class Renderer {
       ctx.fillRect(bx + barW + 1.5 + i * 2.6, by, 1.8, barH);
     }
 
-    // Cannon upgrade bar below the shield bar
-    const cy = by + barH + 0.8;
-    ctx.fillStyle = 'rgba(255, 157, 92, 0.18)';
-    ctx.fillRect(bx, cy, barW, barH);
-    ctx.fillStyle = '#ff9d5c';
-    ctx.fillRect(bx, cy, barW * game.cannonProgress(), barH);
-    ctx.strokeStyle = 'rgba(255, 157, 92, 0.5)';
-    ctx.lineWidth = 0.25;
-    ctx.strokeRect(bx, cy, barW, barH);
-
-    // Cannon level pips
-    for (let i = 0; i < game.cannonLevel; i++) {
-      ctx.fillStyle = '#ff9d5c';
-      ctx.fillRect(bx + barW + 1.5 + i * 2.6, cy, 1.8, barH);
+    // Active power-up timers: one draining chip per effect
+    let px = bx;
+    const py = by + barH + 0.8;
+    for (const key of ['beam', 'fan', 'seeker']) {
+      const remaining = game.power[key];
+      if (remaining <= 0) continue;
+      const color = POWER_INFO[key].color;
+      const chipW = 7;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+      ctx.fillRect(px, py, chipW, barH);
+      ctx.fillStyle = color;
+      ctx.fillRect(px, py, chipW * (remaining / POWER_DURATION), barH);
+      this._text(key[0].toUpperCase(), px + chipW / 2, py + barH / 2 + 0.1, 2, '#05060f');
+      px += chipW + 1.2;
     }
   }
 
@@ -338,7 +400,7 @@ export class Renderer {
     this._text('tap or hold space to shoot', cx, cy, 3.4, '#8a92b8');
     this._text('destroy rocks to charge your shield', cx, cy + lh, 3.4, '#6fd3ff');
     this._text('overcharge it to forge armor', cx, cy + 2 * lh, 3.4, '#ffd75e');
-    this._text('big rocks power up your cannon', cx, cy + 3 * lh, 3.4, '#ff9d5c');
+    this._text('big rocks drop power-ups — fly into them', cx, cy + 3 * lh, 3.4, '#ff9d5c');
     this._text('TAP OR PRESS SPACE TO START', cx, cy + 4.6 * lh, 4, '#7dff9b');
     if (game.highScore > 0) {
       this._text(`HIGH SCORE ${game.highScore}`, cx, cy + 6 * lh, 3.4, '#ffb347');
