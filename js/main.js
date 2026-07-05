@@ -32,6 +32,9 @@ const SOUNDS = {
   armorhit: () => sound.armorHit(),
   pickup: () => sound.pickup(),
   missile: () => sound.missile(),
+  bosswarn: () => sound.bossWarn(),
+  bossdown: () => sound.bossDown(),
+  enemylaser: () => sound.enemyLaser(),
 };
 
 let last = performance.now();

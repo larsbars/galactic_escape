@@ -38,6 +38,14 @@ const MISSILE_TURN_RATE = 5;
 const MISSILE_DMG = 4;
 const MISSILE_SALVO = 4;
 
+// Levels: an asteroid wave, then a boss. Beat the boss to advance.
+const WAVE_DURATION = 35;       // seconds of asteroids before the boss shows
+const BOSS_BASE_HP = 24;
+const BOSS_HP_PER_LEVEL = 14;
+const BOSS_RADIUS = 7;
+const BOSS_Y = 18;              // hover line once fully entered
+const BOSS_SCORE = 500;         // times level
+
 export const State = {
   MENU: 'menu',
   PLAYING: 'playing',
@@ -67,6 +75,11 @@ export class Game {
     this.pickups = [];  // {x, y, vy, type, seed}
     this.missiles = []; // {x, y, vx, vy}
     this.pickupTimer = 8; // first ambient pickup arrives early to teach the mechanic
+    this.level = 1;
+    this.phase = 'wave'; // 'wave' | 'boss'
+    this.phaseTimer = WAVE_DURATION;
+    this.boss = null;    // {x, y, r, hp, maxHp, t, fireTimer, entered}
+    this.bossBullets = [];
     this.elapsed = 0;
     this.ship = { x: WORLD_W / 2, w: 7, h: 8, invuln: 0 };
     this.bullets = [];   // {x, y}
@@ -99,6 +112,7 @@ export class Game {
   start() {
     this.reset();
     this.state = State.PLAYING;
+    this._setMessage('LEVEL 1', '#9ad8ff');
   }
 
   // input: { moveAxis, pointerWorldX (world units or null), primary (bool) }
@@ -118,10 +132,13 @@ export class Game {
     this.elapsed += dt;
     this.messageTimer = Math.max(0, this.messageTimer - dt);
     for (const k in this.power) this.power[k] = Math.max(0, this.power[k] - dt);
+    this._updatePhase(dt, events);
     this._updateShip(dt, input);
     this._updateFiring(dt, input, events);
     this._updateBullets(dt);
     this._updateMissiles(dt, events);
+    this._updateBoss(dt, events);
+    this._updateBossBullets(dt, events);
     this._updateAsteroids(dt, events);
     this._updatePickups(dt, events);
     this._updateParticles(dt);
@@ -129,9 +146,26 @@ export class Game {
     return events;
   }
 
-  // Difficulty ramps with elapsed time.
+  // Difficulty ramps within each wave and with the level itself.
   _difficulty() {
-    return Math.min(1 + this.elapsed / 30, 4);
+    const waveElapsed = this.phase === 'wave' ? WAVE_DURATION - this.phaseTimer : WAVE_DURATION;
+    return Math.min(0.7 + this.level * 0.4 + waveElapsed / 45, 6);
+  }
+
+  _updatePhase(dt, events) {
+    if (this.phase !== 'wave') return;
+    this.phaseTimer -= dt;
+    if (this.phaseTimer <= 0) {
+      this.phase = 'boss';
+      const hp = BOSS_BASE_HP + (this.level - 1) * BOSS_HP_PER_LEVEL;
+      this.boss = {
+        x: WORLD_W / 2, y: -BOSS_RADIUS, r: BOSS_RADIUS,
+        hp, maxHp: hp,
+        t: 0, fireTimer: 2, entered: false,
+      };
+      this._setMessage('BOSS INCOMING', '#ff6b6b');
+      events.push('bosswarn');
+    }
   }
 
   _updateStars(dt) {
@@ -178,17 +212,27 @@ export class Game {
     return this.worldH - 12;
   }
 
+  // Nearest homing target: any asteroid, or the boss once it's on screen.
+  _nearestTarget(x, y) {
+    let best = null, bestD = Infinity;
+    for (const a of this.asteroids) {
+      const dx = a.x - x, dy = a.y - y;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = a; }
+    }
+    if (this.boss && this.boss.entered) {
+      const dx = this.boss.x - x, dy = this.boss.y - y;
+      if (dx * dx + dy * dy < bestD) best = this.boss;
+    }
+    return best;
+  }
+
   _updateBullets(dt) {
     const homing = this.power.seeker > 0;
     for (const b of this.bullets) {
-      if (homing && this.asteroids.length > 0) {
-        // Curve toward the nearest asteroid, turn rate limited
-        let best = null, bestD = Infinity;
-        for (const a of this.asteroids) {
-          const dx = a.x - b.x, dy = a.y - b.y;
-          const d = dx * dx + dy * dy;
-          if (d < bestD) { bestD = d; best = a; }
-        }
+      const best = homing ? this._nearestTarget(b.x, b.y) : null;
+      if (best) {
+        // Curve toward the target, turn rate limited
         const cur = Math.atan2(b.vy, b.vx);
         const want = Math.atan2(best.y - b.y, best.x - b.x);
         let diff = want - cur;
@@ -210,7 +254,8 @@ export class Game {
     this.spawnTimer -= dt;
     if (this.spawnTimer > 0) return;
     const diff = this._difficulty();
-    this.spawnTimer = (1.1 + Math.random() * 0.6) / diff;
+    // Thin the rocks out during boss fights so dodging his shots is the focus
+    this.spawnTimer = ((1.1 + Math.random() * 0.6) / diff) * (this.phase === 'boss' ? 2.2 : 1);
 
     const r = 3 + Math.random() * 5;
     const hp = r > 6 ? 3 : r > 4.5 ? 2 : 1;
@@ -264,31 +309,7 @@ export class Game {
         const hitR = a.r + ship.w * 0.4;
         if (dx * dx + dy * dy < hitR * hitR) {
           a.dead = true;
-          ship.invuln = INVULN_TIME;
-          // Damage order: shield shatters first, then armor, then a life.
-          if (this.shield > 0) {
-            this.shield = 0;
-            this._setMessage('SHIELD DOWN', '#6fd3ff');
-            this._explode(ship.x, shipY - 4, 3, '#6fd3ff');
-            events.push('shieldbreak');
-          } else if (this.armorHp > 0) {
-            this.armorHp -= 1;
-            this._setMessage(this.armorHp > 0 ? 'ARMOR CRACKED' : 'ARMOR DESTROYED', '#ffd75e');
-            this._explode(ship.x, shipY, 3, '#ffd75e');
-            events.push('armorhit');
-          } else {
-            this._explode(ship.x, shipY, 4, '#ff6b6b');
-            this.lives -= 1;
-            events.push('hit');
-            if (this.lives <= 0) {
-              this.state = State.GAME_OVER;
-              if (this.score > this.highScore) {
-                this.highScore = this.score;
-                localStorage.setItem('galactic-escape-high', String(this.highScore));
-              }
-              events.push('gameover');
-            }
-          }
+          this._damageShip(events);
           break;
         }
       }
@@ -311,6 +332,36 @@ export class Game {
         events.push('armorup');
       } else {
         this.shield = SHIELD_MAX;
+      }
+    }
+  }
+
+  // Damage order: shield shatters first, then armor, then a life.
+  _damageShip(events) {
+    const ship = this.ship;
+    const shipY = this.shipY();
+    ship.invuln = INVULN_TIME;
+    if (this.shield > 0) {
+      this.shield = 0;
+      this._setMessage('SHIELD DOWN', '#6fd3ff');
+      this._explode(ship.x, shipY - 4, 3, '#6fd3ff');
+      events.push('shieldbreak');
+    } else if (this.armorHp > 0) {
+      this.armorHp -= 1;
+      this._setMessage(this.armorHp > 0 ? 'ARMOR CRACKED' : 'ARMOR DESTROYED', '#ffd75e');
+      this._explode(ship.x, shipY, 3, '#ffd75e');
+      events.push('armorhit');
+    } else {
+      this._explode(ship.x, shipY, 4, '#ff6b6b');
+      this.lives -= 1;
+      events.push('hit');
+      if (this.lives <= 0) {
+        this.state = State.GAME_OVER;
+        if (this.score > this.highScore) {
+          this.highScore = this.score;
+          localStorage.setItem('galactic-escape-high', String(this.highScore));
+        }
+        events.push('gameover');
       }
     }
   }
@@ -394,13 +445,8 @@ export class Game {
 
   _updateMissiles(dt, events) {
     for (const m of this.missiles) {
-      if (this.asteroids.length > 0) {
-        let best = null, bestD = Infinity;
-        for (const a of this.asteroids) {
-          const dx = a.x - m.x, dy = a.y - m.y;
-          const d = dx * dx + dy * dy;
-          if (d < bestD) { bestD = d; best = a; }
-        }
+      const best = this._nearestTarget(m.x, m.y);
+      if (best) {
         const cur = Math.atan2(m.vy, m.vx);
         const want = Math.atan2(best.y - m.y, best.x - m.x);
         let diff = want - cur;
@@ -438,6 +484,99 @@ export class Game {
       (m) => !m.dead && m.y > -5 && m.y < this.worldH + 5 && m.x > -8 && m.x < WORLD_W + 8
     );
     this.asteroids = this.asteroids.filter((a) => !a.dead);
+  }
+
+  _updateBoss(dt, events) {
+    const boss = this.boss;
+    if (!boss) return;
+    boss.t += dt;
+
+    if (!boss.entered) {
+      boss.y += 10 * dt;
+      if (boss.y >= BOSS_Y) { boss.y = BOSS_Y; boss.entered = true; }
+    } else {
+      // Strafe, faster at higher levels, with a slight vertical hover
+      const strafe = 0.5 + this.level * 0.06;
+      boss.x = WORLD_W / 2 + Math.sin(boss.t * strafe) * 32;
+      boss.y = BOSS_Y + Math.sin(boss.t * 1.3) * 2;
+
+      boss.fireTimer -= dt;
+      if (boss.fireTimer <= 0) {
+        boss.fireTimer = Math.max(0.7, 1.7 - this.level * 0.12);
+        const shots = this.level >= 3 ? 3 : 1;
+        const aim = Math.atan2(this.shipY() - boss.y, this.ship.x - boss.x);
+        const speed = 38 + this.level * 3;
+        for (let i = 0; i < shots; i++) {
+          const ang = aim + (i - (shots - 1) / 2) * 0.25;
+          this.bossBullets.push({
+            x: boss.x, y: boss.y + 3,
+            vx: Math.cos(ang) * speed,
+            vy: Math.sin(ang) * speed,
+          });
+        }
+        events.push('enemylaser');
+      }
+    }
+
+    // Player fire vs boss
+    for (const b of this.bullets) {
+      const dx = b.x - boss.x, dy = b.y - boss.y;
+      if (dx * dx + dy * dy < boss.r * boss.r) {
+        b.dead = true;
+        boss.hp -= b.dmg ?? 1;
+        this._explode(b.x, b.y, 1, '#ff6b6b');
+      }
+    }
+    this.bullets = this.bullets.filter((b) => !b.dead);
+    for (const m of this.missiles) {
+      const dx = m.x - boss.x, dy = m.y - boss.y;
+      const hitR = boss.r + 1;
+      if (dx * dx + dy * dy < hitR * hitR) {
+        m.dead = true;
+        boss.hp -= MISSILE_DMG;
+        this._explode(m.x, m.y, 2, '#ff9d5c');
+      }
+    }
+    this.missiles = this.missiles.filter((m) => !m.dead);
+
+    if (boss.hp <= 0) this._killBoss(events);
+  }
+
+  _killBoss(events) {
+    const boss = this.boss;
+    this.score += BOSS_SCORE * this.level;
+    this._explode(boss.x, boss.y, 10, '#ff6b6b');
+    this._explode(boss.x, boss.y, 8, '#ffb347');
+    // Victory spoils
+    this._spawnPickup(boss.x - 6, boss.y);
+    this._spawnPickup(boss.x + 6, boss.y);
+    this.boss = null;
+    this.bossBullets = [];
+    this.level += 1;
+    this.phase = 'wave';
+    this.phaseTimer = WAVE_DURATION;
+    this._setMessage('LEVEL CLEAR!', '#7dff9b');
+    events.push('bossdown');
+  }
+
+  _updateBossBullets(dt, events) {
+    const ship = this.ship;
+    const shipY = this.shipY();
+    for (const bb of this.bossBullets) {
+      bb.x += bb.vx * dt;
+      bb.y += bb.vy * dt;
+      if (ship.invuln <= 0) {
+        const dx = bb.x - ship.x, dy = bb.y - shipY;
+        const hitR = 1 + ship.w * 0.4;
+        if (dx * dx + dy * dy < hitR * hitR) {
+          bb.dead = true;
+          this._damageShip(events);
+        }
+      }
+    }
+    this.bossBullets = this.bossBullets.filter(
+      (bb) => !bb.dead && bb.y > -5 && bb.y < this.worldH + 5 && bb.x > -5 && bb.x < WORLD_W + 5
+    );
   }
 
   _explode(x, y, size, color) {

@@ -60,6 +60,8 @@ export class Renderer {
     if (game.state === State.PLAYING || game.state === State.GAME_OVER) {
       this._drawBullets(game);
       this._drawMissiles(game);
+      this._drawBoss(game, t);
+      this._drawBossBullets(game);
       this._drawAsteroids(game);
       this._drawPickups(game, t);
     }
@@ -228,6 +230,67 @@ export class Renderer {
     ctx.globalCompositeOperation = 'source-over';
   }
 
+  _drawBoss(game, t) {
+    const boss = game.boss;
+    if (!boss) return;
+    const { ctx } = this;
+
+    // Menace glow
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.3 + 0.1 * Math.sin(t * 4);
+    const g = boss.r * 3.2;
+    ctx.drawImage(glowDot('#ff6b6b'), boss.x - g / 2, boss.y - g / 2, g, g);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+
+    const img = this.assets.boss;
+    const s = boss.r * 2.3;
+    if (ready(img)) {
+      ctx.drawImage(img, boss.x - s / 2, boss.y - s / 2, s, s);
+    } else {
+      // Procedural saucer fallback
+      ctx.fillStyle = '#a13d3d';
+      ctx.beginPath();
+      ctx.ellipse(boss.x, boss.y, boss.r, boss.r * 0.45, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#d98282';
+      ctx.beginPath();
+      ctx.arc(boss.x, boss.y - boss.r * 0.25, boss.r * 0.45, Math.PI, 0);
+      ctx.fill();
+    }
+
+    // Boss HP bar, top center
+    const bw = 34, bh = 1.2;
+    const bx = (WORLD_W - bw) / 2, by = 4.2;
+    ctx.fillStyle = 'rgba(255, 107, 107, 0.2)';
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = '#ff6b6b';
+    ctx.fillRect(bx, by, bw * Math.max(0, boss.hp / boss.maxHp), bh);
+    ctx.strokeStyle = 'rgba(255, 107, 107, 0.6)';
+    ctx.lineWidth = 0.2;
+    ctx.strokeRect(bx, by, bw, bh);
+  }
+
+  _drawBossBullets(game) {
+    const { ctx } = this;
+    const img = ready(this.assets.bossLaser) ? this.assets.bossLaser : null;
+    ctx.globalCompositeOperation = 'lighter';
+    for (const bb of game.bossBullets) {
+      if (img) {
+        const bw = 0.9;
+        const bh = bw * (img.naturalHeight / img.naturalWidth);
+        ctx.save();
+        ctx.translate(bb.x, bb.y);
+        ctx.rotate(Math.atan2(bb.vy, bb.vx) + Math.PI / 2);
+        ctx.drawImage(img, -bw / 2, -bh / 2, bw, bh);
+        ctx.restore();
+      } else {
+        ctx.drawImage(glowDot('#ff6b6b'), bb.x - 1.2, bb.y - 1.2, 2.4, 2.4);
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
   // Pickups bob gently and glow in their effect color so they read as "good".
   _drawPickups(game, t) {
     const { ctx } = this;
@@ -344,6 +407,7 @@ export class Renderer {
   _drawHud(game) {
     const { ctx } = this;
     this._text(`SCORE ${game.score}`, 3, 5, 4, '#e8ecff', 'left');
+    this._text(`LEVEL ${game.level}`, WORLD_W / 2, 2.6, 2.6, '#8a92b8');
     let hearts = '';
     for (let i = 0; i < game.lives; i++) hearts += '▲ ';
     this._text(hearts.trim(), WORLD_W - 3, 5, 4, '#ff6b6b', 'right');
@@ -411,6 +475,7 @@ export class Renderer {
     const cy = game.worldH / 2;
     this._text('GAME OVER', WORLD_W / 2, cy - 10, 9, '#ff6b6b');
     this._text(`SCORE ${game.score}`, WORLD_W / 2, cy + 2, 5);
+    this._text(`REACHED LEVEL ${game.level}`, WORLD_W / 2, cy + 6.5, 3, '#8a92b8');
     if (game.score >= game.highScore && game.score > 0) {
       this._text('NEW HIGH SCORE!', WORLD_W / 2, cy + 10, 4, '#ffb347');
     } else {

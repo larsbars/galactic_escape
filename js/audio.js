@@ -65,6 +65,15 @@ export class Sound {
     this._noise({ duration: 0.3, volume: 0.15 });
     this._tone({ type: 'sawtooth', from: 140, to: 50, duration: 0.4, volume: 0.15 });
   }
+  bossWarn() {
+    this._tone({ type: 'sawtooth', from: 180, to: 360, duration: 0.5, volume: 0.18 });
+    this._tone({ type: 'sawtooth', from: 120, to: 240, duration: 0.5, volume: 0.13 });
+  }
+  bossDown() {
+    this._noise({ duration: 0.6, volume: 0.3 });
+    this._tone({ type: 'triangle', from: 200, to: 40, duration: 0.8, volume: 0.25 });
+  }
+  enemyLaser() { this._tone({ type: 'square', from: 400, to: 140, duration: 0.12, volume: 0.1 }); }
   armorHit()  {
     this._tone({ type: 'square', from: 150, to: 70, duration: 0.15, volume: 0.2 });
     this._noise({ duration: 0.1, volume: 0.15 });
