@@ -23,6 +23,7 @@ export class Renderer {
     this.shipSprite = makeShipSprite();      // procedural fallbacks
     this.bulletSprite = makeBulletSprite();
     this.nebula = makeNebula();
+    this.nebulaHue = 0;
     this.asteroidTex = new WeakMap(); // asteroid -> offscreen texture
     this.resize();
   }
@@ -46,12 +47,27 @@ export class Renderer {
     return (x / this.cssW) * WORLD_W;
   }
 
-  draw(game, t) {
+  draw(game, t, paused = false) {
     const { ctx } = this;
-    ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
+
+    // Screen shake: jitter the whole world transform while game.shake runs out
+    let ox = 0, oy = 0;
+    if (game.shake > 0) {
+      const mag = game.shake * 2.2;
+      ox = (Math.random() * 2 - 1) * mag;
+      oy = (Math.random() * 2 - 1) * mag;
+    }
+    ctx.setTransform(this.scale, 0, 0, this.scale, ox * this.scale, oy * this.scale);
+
+    // Each level tints the nebula differently
+    const hue = ((game.level - 1) * 47) % 360;
+    if (hue !== this.nebulaHue) {
+      this.nebulaHue = hue;
+      this.nebula = makeNebula(hue);
+    }
 
     ctx.fillStyle = '#05060f';
-    ctx.fillRect(0, 0, WORLD_W, game.worldH);
+    ctx.fillRect(-3, -3, WORLD_W + 6, game.worldH + 6);
     ctx.drawImage(this.nebula, 0, 0, WORLD_W, game.worldH);
 
     this._drawStars(game, t);
@@ -72,6 +88,13 @@ export class Renderer {
     }
     if (game.state === State.MENU) this._drawMenu(game);
     if (game.state === State.GAME_OVER) this._drawGameOver(game);
+
+    if (paused) {
+      ctx.fillStyle = 'rgba(5, 6, 15, 0.65)';
+      ctx.fillRect(-3, -3, WORLD_W + 6, game.worldH + 6);
+      this._text('PAUSED', WORLD_W / 2, game.worldH / 2, 7, '#e8ecff');
+      this._text('press P or tap the button to resume', WORLD_W / 2, game.worldH / 2 + 7, 3, '#8a92b8');
+    }
   }
 
   _drawStars(game, t) {
@@ -235,15 +258,18 @@ export class Renderer {
     if (!boss) return;
     const { ctx } = this;
 
-    // Menace glow
+    // Menace glow — flares up while a charger telegraphs its dive
+    const telegraphing = boss.mode === 'telegraph';
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = 0.3 + 0.1 * Math.sin(t * 4);
-    const g = boss.r * 3.2;
+    ctx.globalAlpha = telegraphing
+      ? 0.55 + 0.3 * Math.sin(t * 25)
+      : 0.3 + 0.1 * Math.sin(t * 4);
+    const g = boss.r * (telegraphing ? 4 : 3.2);
     ctx.drawImage(glowDot('#ff6b6b'), boss.x - g / 2, boss.y - g / 2, g, g);
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
 
-    const img = this.assets.boss;
+    const img = this.assets.bosses[boss.type] ?? this.assets.bosses.strafer;
     const s = boss.r * 2.3;
     if (ready(img)) {
       ctx.drawImage(img, boss.x - s / 2, boss.y - s / 2, s, s);
@@ -257,6 +283,16 @@ export class Renderer {
       ctx.beginPath();
       ctx.arc(boss.x, boss.y - boss.r * 0.25, boss.r * 0.45, Math.PI, 0);
       ctx.fill();
+    }
+
+    // White flash on every hit so damage feedback is at the boss, not the bar
+    if (boss.hurt > 0) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = (boss.hurt / 0.12) * 0.8;
+      const f = boss.r * 2.6;
+      ctx.drawImage(glowDot('#ffffff'), boss.x - f / 2, boss.y - f / 2, f, f);
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
     }
 
     // Boss HP bar, top center
@@ -408,9 +444,20 @@ export class Renderer {
     const { ctx } = this;
     this._text(`SCORE ${game.score}`, 3, 5, 4, '#e8ecff', 'left');
     this._text(`LEVEL ${game.level}`, WORLD_W / 2, 2.6, 2.6, '#8a92b8');
-    let hearts = '';
-    for (let i = 0; i < game.lives; i++) hearts += '▲ ';
-    this._text(hearts.trim(), WORLD_W - 3, 5, 4, '#ff6b6b', 'right');
+
+    // Lives as mini ships, matching the game art
+    const shipImg = this.assets.ship;
+    if (ready(shipImg)) {
+      const lw = 3.4;
+      const lhh = lw * (shipImg.naturalHeight / shipImg.naturalWidth);
+      for (let i = 0; i < game.lives; i++) {
+        ctx.drawImage(shipImg, WORLD_W - 3 - (i + 1) * (lw + 0.8), 2.8, lw, lhh);
+      }
+    } else {
+      let hearts = '';
+      for (let i = 0; i < game.lives; i++) hearts += '▲ ';
+      this._text(hearts.trim(), WORLD_W - 3, 5, 4, '#ff6b6b', 'right');
+    }
 
     // Shield charge bar
     const bx = 3, by = 8.2, barW = 22, barH = 1.6;

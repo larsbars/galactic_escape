@@ -4,7 +4,7 @@
 
 export const WORLD_W = 100;
 
-const SHIP_SPEED = 90;          // world units / sec (keyboard)
+const SHIP_SPEED = 115;         // world units / sec (keyboard; near pointer-drag speed)
 const POINTER_LERP = 14;        // how snappily the ship tracks a touch/drag
 const BULLET_SPEED = 140;
 const FIRE_COOLDOWN = 0.18;     // min seconds between shots
@@ -24,7 +24,7 @@ const DROP_CHANCE_BIG = 0.35;       // 3-hit rocks
 const DROP_CHANCE_MED = 0.18;       // 2-hit rocks
 const AMBIENT_PICKUP_INTERVAL = 16; // avg seconds between drifting pickups
 const PICKUP_WEIGHTS = [
-  ['beam', 0.25], ['fan', 0.2], ['seeker', 0.15], ['shield', 0.25], ['missiles', 0.15],
+  ['beam', 0.22], ['fan', 0.18], ['seeker', 0.14], ['shield', 0.24], ['missiles', 0.14], ['life', 0.08],
 ];
 export const POWER_INFO = {
   beam:     { label: 'POWER BEAM',  color: '#ffe066' },
@@ -32,19 +32,27 @@ export const POWER_INFO = {
   seeker:   { label: 'SEEKER LASERS', color: '#ff6b6b' },
   shield:   { label: '+SHIELD',     color: '#6fd3ff' },
   missiles: { label: 'MISSILES AWAY', color: '#ff9d5c' },
+  life:     { label: '+1 LIFE',     color: '#ff8095' },
 };
+const MAX_LIVES = 5;
+const SHIELD_PITY_TIME = 25;    // seconds without protection before a shield is guaranteed
 const MISSILE_SPEED = 75;
 const MISSILE_TURN_RATE = 5;
 const MISSILE_DMG = 4;
 const MISSILE_SALVO = 4;
 
-// Levels: an asteroid wave, then a boss. Beat the boss to advance.
+// Levels: an asteroid wave, a warning lull, a boss, a victory lull.
 const WAVE_DURATION = 35;       // seconds of asteroids before the boss shows
+const WARN_DURATION = 1.8;      // quiet beat before the boss descends
+const CLEAR_DURATION = 2.2;     // breather after LEVEL CLEAR
 const BOSS_BASE_HP = 24;
 const BOSS_HP_PER_LEVEL = 14;
 const BOSS_RADIUS = 7;
 const BOSS_Y = 18;              // hover line once fully entered
 const BOSS_SCORE = 500;         // times level
+// Archetypes cycle by level: predictable strafer, dive-bombing charger,
+// rock-spitting spawner with radial bursts.
+const BOSS_TYPES = ['strafer', 'charger', 'spawner'];
 
 export const State = {
   MENU: 'menu',
@@ -76,12 +84,14 @@ export class Game {
     this.missiles = []; // {x, y, vx, vy}
     this.pickupTimer = 8; // first ambient pickup arrives early to teach the mechanic
     this.level = 1;
-    this.phase = 'wave'; // 'wave' | 'boss'
+    this.phase = 'wave'; // 'wave' | 'warn' | 'boss' | 'clear'
     this.phaseTimer = WAVE_DURATION;
-    this.boss = null;    // {x, y, r, hp, maxHp, t, fireTimer, entered}
+    this.boss = null;
     this.bossBullets = [];
+    this.shake = 0;           // screen-shake seconds remaining
+    this.shieldlessTime = 0;  // how long without shield or armor (pity timer)
     this.elapsed = 0;
-    this.ship = { x: WORLD_W / 2, w: 7, h: 8, invuln: 0 };
+    this.ship = { x: WORLD_W / 2, w: 8.2, h: 9.4, invuln: 0 };
     this.bullets = [];   // {x, y}
     this.asteroids = []; // {x, y, r, vy, vx, hp, spin, angle}
     this.particles = []; // {x, y, vx, vy, life, maxLife, color}
@@ -131,6 +141,9 @@ export class Game {
 
     this.elapsed += dt;
     this.messageTimer = Math.max(0, this.messageTimer - dt);
+    this.shake = Math.max(0, this.shake - dt);
+    if (this.shield <= 0 && this.armorHp <= 0) this.shieldlessTime += dt;
+    else this.shieldlessTime = 0;
     for (const k in this.power) this.power[k] = Math.max(0, this.power[k] - dt);
     this._updatePhase(dt, events);
     this._updateShip(dt, input);
@@ -146,26 +159,44 @@ export class Game {
     return events;
   }
 
-  // Difficulty ramps within each wave and with the level itself.
+  // Difficulty ramps within each wave and with the level; the cap creeps up
+  // slowly so late levels keep differentiating without becoming pure RNG.
   _difficulty() {
     const waveElapsed = this.phase === 'wave' ? WAVE_DURATION - this.phaseTimer : WAVE_DURATION;
-    return Math.min(0.7 + this.level * 0.4 + waveElapsed / 45, 6);
+    return Math.min(0.7 + this.level * 0.4 + waveElapsed / 45, 5 + this.level * 0.08);
   }
 
   _updatePhase(dt, events) {
-    if (this.phase !== 'wave') return;
     this.phaseTimer -= dt;
-    if (this.phaseTimer <= 0) {
-      this.phase = 'boss';
-      const hp = BOSS_BASE_HP + (this.level - 1) * BOSS_HP_PER_LEVEL;
-      this.boss = {
-        x: WORLD_W / 2, y: -BOSS_RADIUS, r: BOSS_RADIUS,
-        hp, maxHp: hp,
-        t: 0, fireTimer: 2, entered: false,
-      };
+    if (this.phaseTimer > 0) return;
+    if (this.phase === 'wave') {
+      // Quiet beat: spawns stop so the warning can land
+      this.phase = 'warn';
+      this.phaseTimer = WARN_DURATION;
       this._setMessage('BOSS INCOMING', '#ff6b6b');
       events.push('bosswarn');
+    } else if (this.phase === 'warn') {
+      this.phase = 'boss';
+      this.phaseTimer = Infinity; // boss phase ends when the boss dies
+      this._spawnBoss();
+    } else if (this.phase === 'clear') {
+      this.phase = 'wave';
+      this.phaseTimer = WAVE_DURATION;
     }
+  }
+
+  _spawnBoss() {
+    const hp = BOSS_BASE_HP + (this.level - 1) * BOSS_HP_PER_LEVEL;
+    this.boss = {
+      type: BOSS_TYPES[(this.level - 1) % BOSS_TYPES.length],
+      x: WORLD_W / 2, y: -BOSS_RADIUS, r: BOSS_RADIUS,
+      hp, maxHp: hp,
+      t: 0, fireTimer: 2, entered: false, hurt: 0,
+      // charger state
+      mode: 'hover', modeT: 0, targetX: WORLD_W / 2,
+      // spawner state
+      spitTimer: 2.5, burstTimer: 4,
+    };
   }
 
   _updateStars(dt) {
@@ -212,15 +243,16 @@ export class Game {
     return this.worldH - 12;
   }
 
-  // Nearest homing target: any asteroid, or the boss once it's on screen.
-  _nearestTarget(x, y) {
+  // Nearest homing target. Seeker bullets only track asteroids — hitting the
+  // boss stays the player's job — while missiles will chase him too.
+  _nearestTarget(x, y, includeBoss = true) {
     let best = null, bestD = Infinity;
     for (const a of this.asteroids) {
       const dx = a.x - x, dy = a.y - y;
       const d = dx * dx + dy * dy;
       if (d < bestD) { bestD = d; best = a; }
     }
-    if (this.boss && this.boss.entered) {
+    if (includeBoss && this.boss && this.boss.entered) {
       const dx = this.boss.x - x, dy = this.boss.y - y;
       if (dx * dx + dy * dy < bestD) best = this.boss;
     }
@@ -230,7 +262,7 @@ export class Game {
   _updateBullets(dt) {
     const homing = this.power.seeker > 0;
     for (const b of this.bullets) {
-      const best = homing ? this._nearestTarget(b.x, b.y) : null;
+      const best = homing ? this._nearestTarget(b.x, b.y, false) : null;
       if (best) {
         // Curve toward the target, turn rate limited
         const cur = Math.atan2(b.vy, b.vx);
@@ -253,17 +285,23 @@ export class Game {
   _spawnAsteroids(dt) {
     this.spawnTimer -= dt;
     if (this.spawnTimer > 0) return;
+    // No spawns during the pre-boss warning or post-boss breather
+    if (this.phase === 'warn' || this.phase === 'clear') return;
     const diff = this._difficulty();
-    // Thin the rocks out during boss fights so dodging his shots is the focus
-    this.spawnTimer = ((1.1 + Math.random() * 0.6) / diff) * (this.phase === 'boss' ? 2.2 : 1);
+    // Thin the rocks out during boss fights so dodging his shots is the focus.
+    // Spawn interval is floored so high levels never become a solid wall.
+    this.spawnTimer = Math.max(0.32, (1.1 + Math.random() * 0.6) / diff) *
+      (this.phase === 'boss' ? 2.2 : 1);
 
     const r = 3 + Math.random() * 5;
     const hp = r > 6 ? 3 : r > 4.5 ? 2 : 1;
     this.asteroids.push({
       x: r + Math.random() * (WORLD_W - 2 * r),
       y: -r,
+      // Speed scaling is capped separately from spawn rate: late-game density
+      // rises, but rocks stay humanly dodgeable.
+      vy: (14 + Math.random() * 12) * (0.7 + Math.min(diff, 3.5) * 0.3),
       r,
-      vy: (14 + Math.random() * 12) * (0.7 + diff * 0.3),
       vx: (Math.random() - 0.5) * 8,
       hp,
       maxHp: hp,
@@ -341,6 +379,7 @@ export class Game {
     const ship = this.ship;
     const shipY = this.shipY();
     ship.invuln = INVULN_TIME;
+    this.shake = Math.max(this.shake, 0.35);
     if (this.shield > 0) {
       this.shield = 0;
       this._setMessage('SHIELD DOWN', '#6fd3ff');
@@ -377,13 +416,16 @@ export class Game {
     events.push('explosion');
   }
 
-  _spawnPickup(x, y) {
-    let roll = Math.random();
-    let type = PICKUP_WEIGHTS[0][0];
-    for (const [t, w] of PICKUP_WEIGHTS) {
-      type = t;
-      roll -= w;
-      if (roll <= 0) break;
+  _spawnPickup(x, y, forcedType = null) {
+    let type = forcedType;
+    if (!type) {
+      let roll = Math.random();
+      type = PICKUP_WEIGHTS[0][0];
+      for (const [t, w] of PICKUP_WEIGHTS) {
+        type = t;
+        roll -= w;
+        if (roll <= 0) break;
+      }
     }
     this.pickups.push({
       x: Math.max(4, Math.min(WORLD_W - 4, x)),
@@ -398,7 +440,9 @@ export class Game {
     this.pickupTimer -= dt;
     if (this.pickupTimer <= 0) {
       this.pickupTimer = AMBIENT_PICKUP_INTERVAL * (0.7 + Math.random() * 0.6);
-      this._spawnPickup(4 + Math.random() * (WORLD_W - 8), -3);
+      // Pity rule: after a long unprotected stretch, the next drifter is a shield
+      const forced = this.shieldlessTime > SHIELD_PITY_TIME ? 'shield' : null;
+      this._spawnPickup(4 + Math.random() * (WORLD_W - 8), -3, forced);
     }
 
     const ship = this.ship;
@@ -422,6 +466,10 @@ export class Game {
       this._addShield(40, events); // may itself announce ARMOR FORGED
     } else if (p.type === 'missiles') {
       this._launchMissiles(events);
+    } else if (p.type === 'life') {
+      if (this.lives < MAX_LIVES) this.lives += 1;
+      else this._addShield(40, events); // full health: convert to shield
+      events.push('life');
     } else {
       this.power[p.type] = POWER_DURATION;
     }
@@ -490,32 +538,24 @@ export class Game {
     const boss = this.boss;
     if (!boss) return;
     boss.t += dt;
+    boss.hurt = Math.max(0, boss.hurt - dt);
 
     if (!boss.entered) {
       boss.y += 10 * dt;
       if (boss.y >= BOSS_Y) { boss.y = BOSS_Y; boss.entered = true; }
+    } else if (boss.type === 'charger') {
+      this._bossCharger(boss, dt, events);
+    } else if (boss.type === 'spawner') {
+      this._bossSpawner(boss, dt, events);
     } else {
-      // Strafe, faster at higher levels, with a slight vertical hover
-      const strafe = 0.5 + this.level * 0.06;
-      boss.x = WORLD_W / 2 + Math.sin(boss.t * strafe) * 32;
-      boss.y = BOSS_Y + Math.sin(boss.t * 1.3) * 2;
+      this._bossStrafer(boss, dt, events);
+    }
 
-      boss.fireTimer -= dt;
-      if (boss.fireTimer <= 0) {
-        boss.fireTimer = Math.max(0.7, 1.7 - this.level * 0.12);
-        const shots = this.level >= 3 ? 3 : 1;
-        const aim = Math.atan2(this.shipY() - boss.y, this.ship.x - boss.x);
-        const speed = 38 + this.level * 3;
-        for (let i = 0; i < shots; i++) {
-          const ang = aim + (i - (shots - 1) / 2) * 0.25;
-          this.bossBullets.push({
-            x: boss.x, y: boss.y + 3,
-            vx: Math.cos(ang) * speed,
-            vy: Math.sin(ang) * speed,
-          });
-        }
-        events.push('enemylaser');
-      }
+    // Ramming the boss (or being dive-bombed) hurts
+    if (this.ship.invuln <= 0) {
+      const dx = boss.x - this.ship.x, dy = boss.y - this.shipY();
+      const hitR = boss.r + this.ship.w * 0.4;
+      if (dx * dx + dy * dy < hitR * hitR) this._damageShip(events);
     }
 
     // Player fire vs boss
@@ -524,6 +564,7 @@ export class Game {
       if (dx * dx + dy * dy < boss.r * boss.r) {
         b.dead = true;
         boss.hp -= b.dmg ?? 1;
+        boss.hurt = 0.12;
         this._explode(b.x, b.y, 1, '#ff6b6b');
       }
     }
@@ -534,12 +575,109 @@ export class Game {
       if (dx * dx + dy * dy < hitR * hitR) {
         m.dead = true;
         boss.hp -= MISSILE_DMG;
+        boss.hurt = 0.12;
         this._explode(m.x, m.y, 2, '#ff9d5c');
       }
     }
     this.missiles = this.missiles.filter((m) => !m.dead);
 
     if (boss.hp <= 0) this._killBoss(events);
+  }
+
+  _bossShoot(boss, shots, events, spread = 0.25) {
+    const aim = Math.atan2(this.shipY() - boss.y, this.ship.x - boss.x);
+    const speed = 38 + this.level * 3;
+    for (let i = 0; i < shots; i++) {
+      const ang = aim + (i - (shots - 1) / 2) * spread;
+      this.bossBullets.push({
+        x: boss.x, y: boss.y + 3,
+        vx: Math.cos(ang) * speed,
+        vy: Math.sin(ang) * speed,
+      });
+    }
+    events.push('enemylaser');
+  }
+
+  // Predictable side-to-side sweeper with aimed shots (spread at higher levels).
+  _bossStrafer(boss, dt, events) {
+    const strafe = 0.5 + this.level * 0.06;
+    boss.x = WORLD_W / 2 + Math.sin(boss.t * strafe) * 32;
+    boss.y = BOSS_Y + Math.sin(boss.t * 1.3) * 2;
+    boss.fireTimer -= dt;
+    if (boss.fireTimer <= 0) {
+      boss.fireTimer = Math.max(0.7, 1.7 - this.level * 0.1);
+      this._bossShoot(boss, this.level >= 4 ? 3 : 1, events);
+    }
+  }
+
+  // Hovers, shudders as a telegraph, then dive-bombs the player's position.
+  _bossCharger(boss, dt, events) {
+    boss.modeT += dt;
+    if (boss.mode === 'hover') {
+      boss.x += (WORLD_W / 2 + Math.sin(boss.t * 0.7) * 20 - boss.x) * Math.min(2 * dt, 1);
+      boss.y += (BOSS_Y - boss.y) * Math.min(2 * dt, 1);
+      boss.fireTimer -= dt;
+      if (boss.fireTimer <= 0) {
+        boss.fireTimer = 2.5;
+        this._bossShoot(boss, 1, events);
+      }
+      if (boss.modeT > 3.2) {
+        boss.mode = 'telegraph';
+        boss.modeT = 0;
+        boss.targetX = this.ship.x;
+      }
+    } else if (boss.mode === 'telegraph') {
+      boss.x += Math.sin(boss.modeT * 40) * 0.4; // shudder
+      if (boss.modeT > 0.7) { boss.mode = 'dive'; boss.modeT = 0; }
+    } else if (boss.mode === 'dive') {
+      boss.y += (55 + this.level * 3) * dt;
+      boss.x += (boss.targetX - boss.x) * Math.min(3 * dt, 1);
+      if (boss.y > this.worldH - 22) { boss.mode = 'return'; boss.modeT = 0; }
+    } else { // return
+      boss.y -= 30 * dt;
+      if (boss.y <= BOSS_Y) { boss.y = BOSS_Y; boss.mode = 'hover'; boss.modeT = 0; }
+    }
+  }
+
+  // Drifts slowly, spits rocks at the player and fires radial bolt bursts.
+  _bossSpawner(boss, dt, events) {
+    boss.x = WORLD_W / 2 + Math.sin(boss.t * 0.35) * 24;
+    boss.y = BOSS_Y + Math.sin(boss.t * 1.1) * 1.5;
+
+    boss.spitTimer -= dt;
+    if (boss.spitTimer <= 0) {
+      boss.spitTimer = Math.max(1.6, 3 - this.level * 0.1);
+      for (const off of [-3, 3]) {
+        const r = 3.5 + Math.random() * 2;
+        const hp = r > 4.5 ? 2 : 1;
+        this.asteroids.push({
+          x: boss.x + off, y: boss.y + 3, r,
+          vy: 22 + Math.random() * 8,
+          vx: off * 1.2 + (Math.random() - 0.5) * 4,
+          hp, maxHp: hp,
+          angle: Math.random() * Math.PI * 2,
+          spin: (Math.random() - 0.5) * 2,
+          seed: Math.random(),
+        });
+      }
+      events.push('enemylaser');
+    }
+
+    boss.burstTimer -= dt;
+    if (boss.burstTimer <= 0) {
+      boss.burstTimer = Math.max(2.6, 4.5 - this.level * 0.12);
+      const n = 5 + Math.min(4, Math.floor(this.level / 3));
+      const speed = 34 + this.level * 2;
+      for (let i = 0; i < n; i++) {
+        const ang = Math.PI * (0.15 + (0.7 * i) / (n - 1)); // downward fan
+        this.bossBullets.push({
+          x: boss.x, y: boss.y + 2,
+          vx: Math.cos(ang) * speed,
+          vy: Math.sin(ang) * speed,
+        });
+      }
+      events.push('enemylaser');
+    }
   }
 
   _killBoss(events) {
@@ -553,8 +691,9 @@ export class Game {
     this.boss = null;
     this.bossBullets = [];
     this.level += 1;
-    this.phase = 'wave';
-    this.phaseTimer = WAVE_DURATION;
+    this.phase = 'clear'; // breather before the next wave
+    this.phaseTimer = CLEAR_DURATION;
+    this.shake = Math.max(this.shake, 0.5);
     this._setMessage('LEVEL CLEAR!', '#7dff9b');
     events.push('bossdown');
   }

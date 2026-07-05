@@ -282,21 +282,23 @@ export function glowDot(color) {
   return dot;
 }
 
-// Dim nebula clouds for the far background, generated once.
-export function makeNebula() {
+// Dim nebula clouds for the far background. hueShift rotates the palette so
+// each level gets its own tint (0 reproduces the original purple/blue).
+export function makeNebula(hueShift = 0) {
   const W = 512, H = 910;
   const c = makeCanvas(W, H);
   const ctx = c.getContext('2d');
   const blobs = [
-    ['rgba(48, 28, 96, 0.55)', 0.25, 0.2, 0.5],
-    ['rgba(20, 60, 110, 0.5)', 0.75, 0.45, 0.45],
-    ['rgba(80, 24, 70, 0.4)', 0.5, 0.8, 0.55],
-    ['rgba(16, 44, 90, 0.45)', 0.15, 0.65, 0.4],
-    ['rgba(60, 34, 100, 0.35)', 0.85, 0.9, 0.4],
+    // [hue, sat%, light%, alpha, fx, fy, fr]
+    [258, 55, 24, 0.55, 0.25, 0.2, 0.5],
+    [213, 69, 25, 0.5, 0.75, 0.45, 0.45],
+    [311, 54, 20, 0.4, 0.5, 0.8, 0.55],
+    [217, 70, 21, 0.45, 0.15, 0.65, 0.4],
+    [264, 49, 26, 0.35, 0.85, 0.9, 0.4],
   ];
-  for (const [color, fx, fy, fr] of blobs) {
+  for (const [h, s, l, a, fx, fy, fr] of blobs) {
     const g = ctx.createRadialGradient(W * fx, H * fy, 0, W * fx, H * fy, W * fr);
-    g.addColorStop(0, color);
+    g.addColorStop(0, `hsla(${(h + hueShift) % 360}, ${s}%, ${l}%, ${a})`);
     g.addColorStop(1, 'rgba(0, 0, 0, 0)');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);

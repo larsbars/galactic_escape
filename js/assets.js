@@ -13,7 +13,11 @@ export function loadAssets() {
   return {
     ship: img('assets/playerShip2_blue.png'),
     laser: img('assets/laserGreen11.png'),
-    boss: img('assets/ufoRed.png'),
+    bosses: {
+      strafer: img('assets/ufoRed.png'),
+      charger: img('assets/enemyBlack1.png'),
+      spawner: img('assets/enemyGreen1.png'),
+    },
     bossLaser: img('assets/laserRed07.png'),
     pickups: {
       beam: img('assets/powerupYellow_bolt.png'),
@@ -21,6 +25,7 @@ export function loadAssets() {
       seeker: img('assets/powerupRed_star.png'),
       shield: img('assets/powerupBlue_shield.png'),
       missiles: img('assets/things_gold.png'),
+      life: img('assets/pill_red.png'),
     },
     shields: [
       img('assets/shield1.png'),
