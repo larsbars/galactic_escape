@@ -13,6 +13,7 @@ import {
   ASTEROID_PAD,
 } from './sprites.js';
 import { loadAssets, ready } from './assets.js';
+import { VERSION, BUILD } from './version.js';
 
 export class Renderer {
   constructor(canvas) {
@@ -516,6 +517,7 @@ export class Renderer {
     if (game.highScore > 0) {
       this._text(`HIGH SCORE ${game.highScore}`, cx, cy + 6 * lh, 3.4, '#ffb347');
     }
+    this._text(`v${VERSION} (${BUILD})`, cx, game.worldH - 2.5, 2.2, '#4a5378');
   }
 
   _drawGameOver(game) {
